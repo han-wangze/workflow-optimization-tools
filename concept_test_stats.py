@@ -217,20 +217,11 @@ def calculate_statistics(df_clean, category_name, category_col):
             metrics[f'不愿意下载原因占比_{reason}'] = f'{count / unwilling_total:.0%}' if unwilling_total > 0 else '0%'
 
     except Exception as e:
+        # 不再静默填充 0%：那会让"统计失败"看起来像"这个品类没人感兴趣"，
+        # 导出一张看起来正常、实际全零的表。把异常交给调用方，
+        # 由它写进汇总表的「统计状态」（2026-11-08 修）。
         print(f"   ⚠️  {category_name} 统计出错: {str(e)[:50]}")
-        # 填充默认值
-        default_cols = ['整体下载意愿', '尖叫度-愿意下载', '游玩时长_一个月以上占比', '游玩时长_半年以上占比',
-                        '男性用户_下载意愿', '男性用户_尖叫度-下载', '女性用户_下载意愿', '女性用户_尖叫度-下载']
-        for col in default_cols:
-            if col not in metrics:
-                metrics[col] = '0%' if '占比' in col or '意愿' in col else '0.00'
-
-        reason_cols = ['题材', '美术', '玩法']
-        for reason in reason_cols:
-            if f'愿意下载原因占比_{reason}' not in metrics:
-                metrics[f'愿意下载原因占比_{reason}'] = '0%'
-            if f'不愿意下载原因占比_{reason}' not in metrics:
-                metrics[f'不愿意下载原因占比_{reason}'] = '0%'
+        raise
 
     return metrics
 
@@ -255,12 +246,14 @@ def auto_detect_game_categories(df_columns):
                 break
 
     if not game_category_mapping:
-        print("   警告：未自动识别到游戏品类问题，使用默认映射")
-        game_category_mapping = {
-            '示例品类A': '1问题:<p>请问您是否出于个人爱好玩过 &nbsp;示例品类A&nbsp; 游戏？（单选）</p>',
-            '示例品类B': '2问题:<p>请问您是否出于个人爱好玩过 &nbsp;示例品类B&nbsp; 游戏？（单选）</p>',
-            '示例品类C': '3问题:<p>请问您是否出于个人爱好玩过 &nbsp;示例品类C&nbsp; 游戏？（单选）</p>',
-        }
+        # 不再用示例映射兜底：那三个列名在真实问卷里并不存在，必然触发 KeyError，
+        # 再被上层吞成 0%，最后导出一张"看起来正常、实际全零"的表。
+        # 这里直接失败，让调用方在汇总表里写明原因（2026-11-08 修）。
+        raise ValueError(
+            "未识别到游戏品类问题列：请检查问卷列名是否包含"
+            "「问题…玩过…游戏」「品类…偏好」「游戏…类型」等关键词，"
+            "或在 auto_detect_game_categories() 中手动指定映射"
+        )
 
     return game_category_mapping
 
@@ -336,12 +329,27 @@ def batch_process():
             else:
                 print(f"   未识别到游玩时长列，游玩时长统计将显示0%")
 
-            # 统计每个游戏品类
+            # 统计每个游戏品类：单个品类失败不拖垮整份问卷，
+            # 但要如实记下失败原因，写进汇总表的「统计状态」
             category_results = []
             for category_name, category_col in game_category_mapping.items():
                 print(f"   正在统计：{category_name}")
-                metrics = calculate_statistics(df_clean, category_name, category_col)
+                try:
+                    metrics = calculate_statistics(df_clean, category_name, category_col)
+                    metrics['统计状态'] = '成功'
+                except Exception as e:
+                    err = str(e)[:80]
+                    print(f"   ❌ {category_name} 统计失败：{err}")
+                    metrics = {'样本用户属性': category_name, '统计状态': f'失败：{err}'}
                 category_results.append(metrics)
+
+            # 全部品类都失败 -> 整份问卷算失败。否则下面补默认值的逻辑
+            # 会把它填成一堆 0%，又回到"看起来正常、实际全零"的老问题
+            if all(str(r.get('统计状态', '')).startswith('失败') for r in category_results):
+                raise RuntimeError('所有品类统计均失败，已跳过该文件')
+
+            # 品类 -> 统计状态（明细表的列是固定的，状态单独维护给汇总表用）
+            status_map = {r['样本用户属性']: r.get('统计状态', '成功') for r in category_results}
 
             # 整理结果
             result_df = pd.DataFrame(category_results)
@@ -384,7 +392,7 @@ def batch_process():
                     '不愿意下载原因占比_题材': row['不愿意下载原因占比_题材'],
                     '不愿意下载原因占比_美术': row['不愿意下载原因占比_美术'],
                     '不愿意下载原因占比_玩法': row['不愿意下载原因占比_玩法'],
-                    '统计状态': '成功'
+                    '统计状态': status_map.get(row['样本用户属性'], '成功')
                 }
                 batch_summary.append(summary_row)
 
