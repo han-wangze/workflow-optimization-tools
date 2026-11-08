@@ -1,4 +1,6 @@
+# 三个脚本的公共依赖
 pandas
 numpy
 openpyxl
-bilibili-api-python
+
+# 跑 bilibili_crawler.py 还需要网络客户端，见 requirements-bilibili.txt

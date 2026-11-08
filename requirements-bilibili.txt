@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# bilibili-api-python 的 requires_dist 里不含任何网络客户端，需要自行选一个装上，
+# 否则所有请求都会失败。aiohttp / httpx / curl_cffi 三选一，这里默认 aiohttp。
+bilibili-api-python
+aiohttp
